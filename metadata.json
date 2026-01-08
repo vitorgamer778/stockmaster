@@ -1,0 +1,7 @@
+{
+  "name": "StockMaster Pro",
+  "description": "Uma plataforma intuitiva para contagem e gestão de estoque em tempo real, com análise inteligente via Gemini.",
+  "requestFramePermissions": [
+    "camera"
+  ]
+}

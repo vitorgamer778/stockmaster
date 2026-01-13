@@ -2,8 +2,12 @@
 import { GoogleGenAI, Type } from "@google/genai";
 import { Product, Unit, Tab } from "../types";
 
-// Always use process.env.API_KEY and named parameter for initialization
-const getAI = () => new GoogleGenAI({ apiKey: process.env.API_KEY });
+// Always use process.env.GEMINI_API_KEY and named parameter for initialization
+const getAI = () => {
+  const key = process.env.GEMINI_API_KEY || process.env.API_KEY;
+  if (!key) throw new Error('GEMINI_API_KEY not set in environment');
+  return new GoogleGenAI({ apiKey: key });
+};
 
 export const extractProductsFromDocument = async (base64Data: string, mimeType: string, tabs: Tab[]): Promise<{code: string, name: string, categoryName: string}[]> => {
   const ai = getAI();

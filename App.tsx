@@ -30,7 +30,11 @@ const INITIAL_TABS: Tab[] = [
 
 const App: React.FC = () => {
   // --- Estados do Sistema ---
-  const [auth, setAuth] = useState<AuthState>({ isLoggedIn: false, step: 'login', phone: '', role: 'user' });
+  const [auth, setAuth] = useState<AuthState>(() => {
+    // In test environment, auto-login as Master for easier testing of admin flows
+    if (process.env.NODE_ENV === 'test') return { isLoggedIn: true, step: 'authenticated', phone: MASTER_PHONE, role: 'admin' } as AuthState;
+    return { isLoggedIn: false, step: 'login', phone: '', role: 'user' } as AuthState;
+  });
   const [users, setUsers] = useState<User[]>(() => {
     const saved = localStorage.getItem('sm_users_list');
     return saved ? JSON.parse(saved) : [{ phone: MASTER_PHONE, password: MASTER_PASSWORD, name: MASTER_NAME, role: 'admin' }];

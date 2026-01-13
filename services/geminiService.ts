@@ -1,17 +1,25 @@
 
-import { GoogleGenAI, Type } from "@google/genai";
 import { Product, Unit, Tab } from "../types";
 
-// Always use process.env.GEMINI_API_KEY and named parameter for initialization
-const getAI = () => {
+// Use dynamic import to avoid top-level module resolution errors in serverless runtime
+const getAI = async () => {
   const key = process.env.GEMINI_API_KEY || process.env.API_KEY;
   if (!key) throw new Error('GEMINI_API_KEY not set in environment');
-  return new GoogleGenAI({ apiKey: key });
+  try {
+    const mod = await import('@google/genai');
+    const { GoogleGenAI } = mod as any;
+    return new GoogleGenAI({ apiKey: key });
+  } catch (e: any) {
+    console.error('Failed to load @google/genai:', e);
+    throw new Error('AI library not available in runtime: ' + (e?.message || String(e)));
+  }
 };
 
 export const extractProductsFromDocument = async (base64Data: string, mimeType: string, tabs: Tab[]): Promise<{code: string, name: string, categoryName: string}[]> => {
-  const ai = getAI();
-  
+  const ai = await getAI();
+  // Import Type dynamically to avoid top-level module import issues
+  const { Type } = await import('@google/genai');
+
   // Criamos uma lista clara de categorias e suas regras para a IA
   const categoriesContext = tabs.map(t => `- ABA "${t.name}": ${t.instruction || 'Produtos variados'}`).join('\n');
 

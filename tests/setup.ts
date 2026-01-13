@@ -1,2 +1,7 @@
 import '@testing-library/jest-dom';
-// Setup file for tests; we use explicit fetch mocks in tests for now.
+import { server } from './mocks/server';
+
+// Setup MSW for tests
+beforeAll(() => server.listen({ onUnhandledRequest: 'warn' }));
+afterEach(() => server.resetHandlers());
+afterAll(() => server.close());

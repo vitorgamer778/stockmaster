@@ -25,8 +25,48 @@ O app agora mantém um registro (audit log) de ações importantes do usuário �
 
 ## Deploy (Vercel) — manter a API Gemini segura
 
-1. Faça login no Vercel e conecte este repositório (ou use `vercel` CLI).
-2. Defina a variável de ambiente `GEMINI_API_KEY` no painel de **Environment Variables** do projeto (não exponha a chave no frontend).
-3. Deploy: o Vercel criará um endpoint serverless `/api/extract` que o frontend usa para enviar arquivos (base64) e receber a resposta da IA.
+Opções rápidas:
 
-Observação: localmente, você pode testar o endpoint usando `vercel dev` ou definindo `GEMINI_API_KEY` no seu `.env` durante o desenvolvimento.
+- Deploy via UI: Conecte o repositório no painel do Vercel, defina `GEMINI_API_KEY` em **Settings → Environment Variables**, e clique em **Deploy**.
+
+- Deploy via CLI (exemplo):
+
+1. Instale e faça login no Vercel:
+   ```bash
+   npm i -g vercel
+   vercel login
+   ```
+2. Vincule o projeto (na pasta do repo):
+   ```bash
+   vercel link
+   ```
+3. Adicione a variável de ambiente `GEMINI_API_KEY` (por ambiente):
+   ```bash
+   vercel env add GEMINI_API_KEY production
+   vercel env add GEMINI_API_KEY preview
+   ```
+4. Faça deploy:
+   ```bash
+   vercel --prod
+   ```
+
+Nota: A variável `GEMINI_API_KEY` **NUNCA** deve ficar no código cliente. O endpoint serverless `POST /api/extract` roda no servidor do Vercel e usa essa variável para chamar a API de IA.
+
+Dica rápida: para testar localmente com o mesmo comportamento, use `vercel dev` e defina `GEMINI_API_KEY` no seu `.env`.
+
+## Deploy automático via GitHub Actions (opcional)
+
+Se preferir deploy automático quando `main` receber um push, siga estes passos:
+
+1. Crie um token no Vercel:
+   - Entre em https://vercel.com/account/tokens e gere um novo token (nomeie como `github-actions` ou similar).
+2. Configure Secrets no seu repositório GitHub:
+   - `VERCEL_TOKEN` → o token criado no passo anterior
+   - `VERCEL_ORG_ID` → ID da sua organização (encontrado no dashboard do Vercel ou via `vercel projects`)
+   - `VERCEL_PROJECT_ID` → ID do projeto do Vercel (disponível no dashboard ou via `vercel projects`)
+
+3. Habilite a workflow criada (`.github/workflows/deploy.yml`). O deploy será disparado automaticamente ao fazer push em `main`.
+
+Observação: o workflow usa o CLI do Vercel para fazer deploy. Certifique-se de que `GEMINI_API_KEY` esteja definida nas **Environment Variables** do projeto no Vercel (Settings → Environment Variables) para os ambientes `Preview` e `Production`.
+
+Se quiser, eu posso ajudar a gerar os IDs do projeto e organização usando o `vercel` CLI localmente (você precisará executar os comandos com seu login Vercel), ou posso direcionar passo a passo para adicionar os secrets no GitHub UI.

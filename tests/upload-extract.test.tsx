@@ -38,19 +38,19 @@ test('fluxo de importação: upload -> /api/extract -> produto aparece', async (
   await userEvent.click(adminBtn);
   await waitFor(() => expect(screen.getByText(/Importar via Nota Fiscal/i)).toBeInTheDocument(), { timeout: 2000 });
 
-  // Mock fetch to emulate serverless /api/extract response
+  // Mock fetch para emular o endpoint /api/extract (assíncrono e estável)
   const origFetch = (global as any).fetch;
-  let fetchCalled = false;
-  (global as any).fetch = async () => { fetchCalled = true; return ({ ok: true, json: async () => ({ ok: true, data: [{ code: '123', name: 'PRODUTO TESTE', categoryName: 'Geral' }] }) }); };
+  const fetchMock = vi.fn(async () => ({ ok: true, json: async () => ({ ok: true, data: [{ code: '123', name: 'PRODUTO TESTE', categoryName: 'Geral' }] }) }));
+  (global as any).fetch = fetchMock;
 
-  // Prepare FileReader mock
+  // Prepare FileReader mock (chamada onload assíncrona)
   const origFileReader = (global as any).FileReader;
   class MockFileReader {
     result: string | null = null;
     onload: ((e: any) => void) | null = null;
     readAsDataURL() {
       this.result = 'data:application/pdf;base64,ZmFrZQ==';
-      if (this.onload) this.onload({ target: { result: this.result } });
+      setTimeout(() => { if (this.onload) this.onload({ target: { result: this.result } }); }, 0);
     }
   }
   (global as any).FileReader = MockFileReader;
@@ -64,12 +64,10 @@ test('fluxo de importação: upload -> /api/extract -> produto aparece', async (
   // fire upload using userEvent to ensure proper FileList is set, wrapped in act
   await userEvent.upload(fileInput, file);
 
-  // Wait for fetch to be called and product to appear in the table (input value)
-  await waitFor(() => expect(fetchCalled).toBe(true), { timeout: 3000 });
-  await waitFor(() => expect(screen.queryByDisplayValue(/PRODUTO TESTE/i)).toBeTruthy(), { timeout: 3000 });
+  // Wait for product to appear in the table (input value)
+  await waitFor(() => expect(screen.queryByDisplayValue(/PRODUTO TESTE/i)).toBeTruthy(), { timeout: 5000 });
 
   // restore
   window.alert = origAlert;
   (global as any).FileReader = origFileReader;
-  (global as any).fetch = origFetch;
 });

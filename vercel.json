@@ -1,8 +1,4 @@
 {
-  "builds": [
-    { "src": "package.json", "use": "@vercel/static-build" }
-  ],
-  "outputDirectory": "dist",
   "functions": {
     "api/**/*.ts": {
       "memory": 1024,

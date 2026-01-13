@@ -1,9 +1,11 @@
 
 import React, { useState, useMemo, useEffect, useRef } from 'react';
 import { Product, Tab, Unit, AuthState, User, StockEntry } from './types';
-import { extractProductsFromDocument } from './services/geminiService';
+// Serverless: use the internal /api/extract endpoint to keep GEMINI_API_KEY on the server
+// (previously imported client-side)
 import { jsPDF } from 'jspdf';
 import 'jspdf-autotable';
+import { logEvent, getLogs, exportLogsJSON, exportLogsCSV, clearLogs } from './services/logService';
 
 const MASTER_PHONE = '62998208705';
 const MASTER_NAME = 'Victhor Hugo Carvalho Rodrigues';
@@ -28,7 +30,11 @@ const INITIAL_TABS: Tab[] = [
 
 const App: React.FC = () => {
   // --- Estados do Sistema ---
-  const [auth, setAuth] = useState<AuthState>({ isLoggedIn: false, step: 'login', phone: '', role: 'user' });
+  const [auth, setAuth] = useState<AuthState>(() => {
+    // In test environment, auto-login as Master for easier testing of admin flows
+    if (process.env.NODE_ENV === 'test') return { isLoggedIn: true, step: 'authenticated', phone: MASTER_PHONE, role: 'admin' } as AuthState;
+    return { isLoggedIn: false, step: 'login', phone: '', role: 'user' } as AuthState;
+  });
   const [users, setUsers] = useState<User[]>(() => {
     const saved = localStorage.getItem('sm_users_list');
     return saved ? JSON.parse(saved) : [{ phone: MASTER_PHONE, password: MASTER_PASSWORD, name: MASTER_NAME, role: 'admin' }];
@@ -67,6 +73,7 @@ const App: React.FC = () => {
   const [isAccessModalOpen, setIsAccessModalOpen] = useState(false);
   const [isExpiryModalOpen, setIsExpiryModalOpen] = useState(false);
   const [isUnitsModalOpen, setIsUnitsModalOpen] = useState(false);
+  const [isLogsModalOpen, setIsLogsModalOpen] = useState(false);
 
   const [editingTab, setEditingTab] = useState<Tab | null>(null);
   const [editingUnit, setEditingUnit] = useState<Unit | null>(null);
@@ -134,6 +141,11 @@ const App: React.FC = () => {
     }, 400);
   };
 
+  const handleLogout = () => {
+    logEvent('logout', null, auth.phone);
+    setAuth({ isLoggedIn: false, step: 'login', phone: '', role: 'user' });
+  };
+
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     const loader = startLoading("Autenticando...", 800);
@@ -142,14 +154,27 @@ const App: React.FC = () => {
       const found = users.find(u => u.phone === cleanPhone && u.password === loginForm.password);
       stopLoading(loader);
       if (found) {
+        logEvent('login_requested', { phone: cleanPhone }, cleanPhone);
         const otp = Math.floor(100000 + Math.random() * 900000).toString();
         setGeneratedOtp(otp);
         alert(`CÓDIGO DE ACESSO: ${otp}`);
         setAuth({ ...auth, step: 'otp', phone: cleanPhone, role: found.role });
       } else {
+        logEvent('login_failed', { phone: loginForm.phone }, loginForm.phone.replace(/\D/g, ''));
         setLoginError("Credenciais incorretas.");
       }
     }, 800);
+  };
+
+  const handleValidateOtp = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (otpInput === generatedOtp) {
+      logEvent('login_success', null, auth.phone);
+      setAuth({...auth, step: 'authenticated', isLoggedIn: true});
+    } else {
+      logEvent('login_otp_failed', null, auth.phone);
+      alert("Código Incorreto!");
+    }
   };
 
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -158,12 +183,29 @@ const App: React.FC = () => {
     const loader = startLoading("IA lendo nota e categorizando abas...", 5000);
 
     try {
+      logEvent('file_upload_started', { filename: file.name, type: file.type }, auth.phone);
       const reader = new FileReader();
       reader.readAsDataURL(file);
       reader.onload = async () => {
         const base64 = (reader.result as string).split(',')[1];
-        const extracted = await extractProductsFromDocument(base64, file.type, tabs.filter(t => t.id !== 'tab-1'));
-        
+
+        // Call serverless endpoint to keep API key secret
+        const resp = await fetch('/api/extract', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ base64, mimeType: file.type, tabs: tabs.filter(t => t.id !== 'tab-1') })
+        });
+
+        const data = await resp.json();
+        if (!resp.ok || !data.ok) {
+          const errorMsg = data?.error || 'Erro ao consultar a IA';
+          stopLoading(loader);
+          logEvent('file_upload_error', { error: errorMsg }, auth.phone);
+          return alert(errorMsg);
+        }
+
+        const extracted = data.data as { code: string, name: string, categoryName: string }[];
+
         const newItems: Product[] = extracted.map((item, idx) => {
           const matchedTab = tabs.find(t => t.name.toUpperCase() === item.categoryName.toUpperCase());
           return {
@@ -178,16 +220,19 @@ const App: React.FC = () => {
 
         setProducts(prev => [...newItems, ...prev]);
         stopLoading(loader);
+        logEvent('file_upload_parsed', { count: extracted.length }, auth.phone);
         alert(`${extracted.length} itens importados e divididos nas abas!`);
         setIsSettingsModalOpen(false);
       };
     } catch (err: any) {
       stopLoading(loader);
+      logEvent('file_upload_error', { error: err?.message || String(err) }, auth.phone);
       alert(err.message);
     }
   };
 
   const handleGeneratePDF = async () => {
+    logEvent('export_pdf', { count: products.length }, auth.phone);
     const loader = startLoading("Gerando Relatório PDF...", 1500);
     try {
       const doc = new jsPDF();
@@ -224,6 +269,8 @@ const App: React.FC = () => {
       if (p.id !== productId) return p;
       const ns = [...p.stocks];
       ns[stockIdx].quantity = Math.max(0, ns[stockIdx].quantity + delta);
+      const newQty = ns[stockIdx].quantity;
+      logEvent('stock_updated', { productId, stockIdx, delta, newQuantity: newQty }, auth.phone);
       return { ...p, stocks: ns, lastCounted: new Date().toISOString() };
     }));
   };
@@ -231,9 +278,11 @@ const App: React.FC = () => {
   const handleAddStockLine = (productId: string) => {
     setProducts(prev => prev.map(p => {
       if (p.id !== productId) return p;
+      const newStocks = [...p.stocks, { quantity: 0, unitId: units[0]?.id || 'u1', expiryDate: '' }];
+      logEvent('stock_line_added', { productId, newSize: newStocks.length }, auth.phone);
       return {
         ...p,
-        stocks: [...p.stocks, { quantity: 0, unitId: units[0]?.id || 'u1', expiryDate: '' }],
+        stocks: newStocks,
         lastCounted: new Date().toISOString()
       };
     }));
@@ -244,6 +293,7 @@ const App: React.FC = () => {
       if (p.id !== productId) return p;
       if (p.stocks.length <= 1) return p;
       const ns = p.stocks.filter((_, i) => i !== stockIdx);
+      logEvent('stock_line_removed', { productId, removedIdx: stockIdx, newSize: ns.length }, auth.phone);
       return { ...p, stocks: ns, lastCounted: new Date().toISOString() };
     }));
   };
@@ -259,9 +309,11 @@ const App: React.FC = () => {
 
     if (editingUnit) {
       setUnits(prev => prev.map(u => u.id === editingUnit.id ? { ...u, name, shortName } : u));
+      logEvent('unit_saved', { name, shortName, editedId: editingUnit.id }, auth.phone);
       setEditingUnit(null);
     } else {
       setUnits(prev => [...prev, { id: `u-${Date.now()}`, name, shortName }]);
+      logEvent('unit_saved', { name, shortName, editedId: null }, auth.phone);
     }
     e.currentTarget.reset();
   };
@@ -269,6 +321,7 @@ const App: React.FC = () => {
   const handleDeleteUnit = (id: string) => {
     if (units.length <= 1) return alert("Mínimo de 1 unidade necessária.");
     if (confirm("Apagar esta unidade?")) {
+      logEvent('unit_deleted', { id }, auth.phone);
       setUnits(prev => prev.filter(u => u.id !== id));
     }
   };
@@ -285,10 +338,12 @@ const App: React.FC = () => {
 
     if (editingUser) {
       setUsers(prev => prev.map(u => u.phone === editingUser.phone ? { ...u, name, phone, password } : u));
+      logEvent('user_saved', { name, phone, editing: editingUser.phone }, auth.phone);
       setEditingUser(null);
     } else {
       if (users.find(u => u.phone === phone)) return alert("Telefone já cadastrado!");
       setUsers(prev => [...prev, { name, phone, password, role: 'user' }]);
+      logEvent('user_saved', { name, phone, editing: null }, auth.phone);
     }
     e.currentTarget.reset();
   };
@@ -296,6 +351,7 @@ const App: React.FC = () => {
   const handleDeleteUser = (phone: string) => {
     if (phone === MASTER_PHONE) return alert("Não é possível apagar o Master.");
     if (confirm("Remover este membro da equipe?")) {
+      logEvent('user_deleted', { phone }, auth.phone);
       setUsers(prev => prev.filter(u => u.phone !== phone));
     }
   };
@@ -307,8 +363,15 @@ const App: React.FC = () => {
     const name = formData.get('tname') as string;
     const instruction = formData.get('tinstruction') as string;
     if (!name) return;
-    setTabs(prev => [...prev, { id: `tab-${Date.now()}`, name, instruction }]);
+    const newTab = { id: `tab-${Date.now()}`, name, instruction } as Tab;
+    setTabs(prev => [...prev, newTab]);
+    logEvent('tab_created', { id: newTab.id, name }, auth.phone);
     setIsTabModalOpen(false);
+  };
+
+  const handleSetActiveTab = (tabId: string) => {
+    setActiveTabId(tabId);
+    logEvent('tab_selected', { tabId }, auth.phone);
   };
 
   const handleEditTab = (e: React.FormEvent<HTMLFormElement>) => {
@@ -319,6 +382,7 @@ const App: React.FC = () => {
     const instruction = formData.get('etinstruction') as string;
     if (!name) return;
     setTabs(prev => prev.map(t => t.id === editingTab.id ? { ...t, name, instruction } : t));
+    logEvent('tab_edited', { id: editingTab.id, name }, auth.phone);
     setIsTabEditModalOpen(false);
     setEditingTab(null);
   };
@@ -332,7 +396,8 @@ const App: React.FC = () => {
     if (confirm(`Atenção: A aba "${tabName}" será excluída.\n\nTodos os produtos desta aba serão movidos para o setor "Geral". Deseja continuar?`)) {
       // Move produtos
       setProducts(products.map(p => p.tabId === tabId ? { ...p, tabId: 'tab-1' } : p));
-      // Remove aba
+      // Log and remove aba
+      logEvent('tab_deleted', { id: tabId, name: tabName }, auth.phone);
       setTabs(tabs.filter(t => t.id !== tabId));
       // Reset active tab se necessário
       if (activeTabId === tabId) {
@@ -359,7 +424,45 @@ const App: React.FC = () => {
       lastCounted: new Date().toISOString()
     };
     setProducts(prev => [newProduct, ...prev]);
+    logEvent('product_created', { id: newProduct.id, name: newProduct.name, tabId: newProduct.tabId }, auth.phone);
     setIsProductModalOpen(false);
+  };
+
+  const handleEditProductName = (productId: string, name: string) => {
+    setProducts(prev => prev.map(p => p.id === productId ? { ...p, name: name.toUpperCase() } : p));
+    logEvent('product_edited', { productId, field: 'name', value: name }, auth.phone);
+  };
+
+  const handleEditProductCode = (productId: string, code: string) => {
+    setProducts(prev => prev.map(p => p.id === productId ? { ...p, code } : p));
+    logEvent('product_edited', { productId, field: 'code', value: code }, auth.phone);
+  };
+
+  const handleDeleteProduct = (productId: string) => {
+    const prod = products.find(p => p.id === productId);
+    if (!prod) return;
+    if (confirm("Apagar produto?")) {
+      logEvent('product_deleted', { id: prod.id, name: prod.name }, auth.phone);
+      setProducts(products.filter(px => px.id !== productId));
+    }
+  };
+
+  const handleChangeUnit = (productId: string, stockIdx: number, unitId: string) => {
+    setProducts(prev => prev.map(p => {
+      if (p.id !== productId) return p;
+      const ns = [...p.stocks]; ns[stockIdx].unitId = unitId;
+      logEvent('stock_unit_changed', { productId, stockIdx, unitId }, auth.phone);
+      return { ...p, stocks: ns, lastCounted: new Date().toISOString() };
+    }));
+  };
+
+  const handleChangeExpiry = (productId: string, stockIdx: number, expiry: string) => {
+    setProducts(prev => prev.map(p => {
+      if (p.id !== productId) return p;
+      const ns = [...p.stocks]; ns[stockIdx].expiryDate = expiry;
+      logEvent('stock_expiry_changed', { productId, stockIdx, expiry }, auth.phone);
+      return { ...p, stocks: ns, lastCounted: new Date().toISOString() };
+    }));
   };
 
   // --- Interface Principal ---
@@ -391,7 +494,7 @@ const App: React.FC = () => {
         <div className="bg-white w-full max-w-sm rounded-[3rem] p-12 text-center animate-scale-in">
            <h2 className="text-xl font-black text-slate-900 uppercase">Verificação</h2>
            <p className="text-[10px] font-bold text-slate-400 mt-2 uppercase tracking-widest">Insira o código enviado</p>
-           <form onSubmit={(e) => { e.preventDefault(); if(otpInput === generatedOtp) setAuth({...auth, step: 'authenticated', isLoggedIn: true}); else alert("Código Incorreto!"); }} className="mt-8 space-y-4">
+           <form onSubmit={handleValidateOtp} className="mt-8 space-y-4">
               <input autoFocus maxLength={6} className="w-full text-center text-4xl tracking-widest font-black py-4 bg-slate-50 border-2 border-slate-100 rounded-2xl outline-none" value={otpInput} onChange={e => setOtpInput(e.target.value.replace(/\D/g,''))} />
               <button className="w-full py-5 bg-indigo-600 text-white rounded-2xl font-black shadow-lg">VALIDAR ACESSO</button>
               <button type="button" onClick={() => setAuth({...auth, step: 'login'})} className="text-[10px] font-black text-slate-300 uppercase mt-4">Voltar</button>
@@ -428,7 +531,7 @@ const App: React.FC = () => {
                   {stats.nearExpiry > 0 && <span className="absolute -top-1 -right-1 bg-red-600 text-white text-[8px] font-bold px-1.5 py-0.5 rounded-full border-2 border-slate-900">{stats.nearExpiry}</span>}
                </button>
                {isAdmin && <button onClick={() => setIsSettingsModalOpen(true)} className="w-12 h-12 bg-indigo-500/10 text-indigo-400 rounded-xl hover:bg-indigo-500 hover:text-white transition-all"><i className="fas fa-cog"></i></button>}
-               <button onClick={() => setAuth({isLoggedIn: false, step: 'login', phone: '', role: 'user'})} className="w-12 h-12 bg-red-500/10 text-red-400 rounded-xl hover:bg-red-500 hover:text-white transition-all"><i className="fas fa-power-off"></i></button>
+               <button onClick={handleLogout} className="w-12 h-12 bg-red-500/10 text-red-400 rounded-xl hover:bg-red-500 hover:text-white transition-all"><i className="fas fa-power-off"></i></button>
             </div>
          </div>
       </header>
@@ -459,7 +562,7 @@ const App: React.FC = () => {
                {tabs.map(tab => (
                  <div key={tab.id} className="relative flex items-center group">
                     <button 
-                       onClick={() => setActiveTabId(tab.id)}
+                       onClick={() => handleSetActiveTab(tab.id)}
                        className={`px-6 py-3 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all whitespace-nowrap ${activeTabId === tab.id ? 'bg-indigo-600 text-white shadow-lg' : 'text-slate-400 hover:bg-slate-50'}`}
                     >
                        {tab.name}
@@ -490,8 +593,8 @@ const App: React.FC = () => {
                         <tr key={p.id} className="group hover:bg-slate-50/50">
                            <td className="p-6 align-top">
                               <div className="flex flex-col">
-                                 <input className="bg-transparent border-none font-black text-slate-800 text-lg p-0 focus:ring-0 uppercase leading-tight" value={p.name} onChange={e => setProducts(products.map(px => px.id === p.id ? {...px, name: e.target.value.toUpperCase()} : px))} />
-                                 <input className="text-[10px] font-black text-indigo-500 border-none bg-transparent p-0 focus:ring-0 mt-1" value={p.code || ''} placeholder="SKU/CÓDIGO..." onChange={e => setProducts(products.map(px => px.id === p.id ? {...px, code: e.target.value} : px))} />
+                                 <input className="bg-transparent border-none font-black text-slate-800 text-lg p-0 focus:ring-0 uppercase leading-tight" value={p.name} onChange={e => handleEditProductName(p.id, e.target.value)} />
+                                 <input className="text-[10px] font-black text-indigo-500 border-none bg-transparent p-0 focus:ring-0 mt-1" value={p.code || ''} placeholder="SKU/CÓDIGO..." onChange={e => handleEditProductCode(p.id, e.target.value)} />
                                  <button onClick={() => handleAddStockLine(p.id)} className="mt-4 text-[9px] font-black text-indigo-600 uppercase flex items-center gap-2">
                                     <i className="fas fa-plus-circle"></i> Novo Lote
                                  </button>
@@ -510,10 +613,7 @@ const App: React.FC = () => {
                                        <select 
                                           className="bg-slate-100 text-[10px] font-black border-none rounded-xl px-4 py-2" 
                                           value={s.unitId} 
-                                          onChange={e => { 
-                                             const ns = [...p.stocks]; ns[idx].unitId = e.target.value; 
-                                             setProducts(products.map(px => px.id === p.id ? {...px, stocks: ns} : px)); 
-                                          }}
+                                          onChange={e => handleChangeUnit(p.id, idx, e.target.value)}
                                        >
                                           {units.map(u => <option key={u.id} value={u.id}>{u.shortName.toUpperCase()}</option>)}
                                        </select>
@@ -522,10 +622,7 @@ const App: React.FC = () => {
                                           type="date" 
                                           className="bg-white border border-slate-100 rounded-xl px-4 py-2 text-[10px] font-black text-slate-600 outline-none" 
                                           value={s.expiryDate || ''} 
-                                          onChange={e => { 
-                                             const ns = [...p.stocks]; ns[idx].expiryDate = e.target.value; 
-                                             setProducts(products.map(px => px.id === p.id ? {...px, stocks: ns} : px)); 
-                                          }} 
+                                          onChange={e => handleChangeExpiry(p.id, idx, e.target.value)} 
                                        />
 
                                        {p.stocks.length > 1 && (
@@ -539,7 +636,7 @@ const App: React.FC = () => {
                            </td>
                            {isAdmin && (
                               <td className="p-6 text-right align-top">
-                                 <button onClick={() => { if(confirm("Apagar produto?")) setProducts(products.filter(px => px.id !== p.id)); }} className="text-slate-200 hover:text-red-500 p-3 rounded-full hover:bg-red-50"><i className="fas fa-trash-alt text-xl"></i></button>
+                                 <button onClick={() => handleDeleteProduct(p.id)} className="text-slate-200 hover:text-red-500 p-3 rounded-full hover:bg-red-50"><i className="fas fa-trash-alt text-xl"></i></button>
                               </td>
                            )}
                         </tr>
@@ -567,6 +664,11 @@ const App: React.FC = () => {
 
                   <button onClick={() => { setIsAccessModalOpen(true); setIsSettingsModalOpen(false); }} className="w-full flex items-center justify-between p-5 bg-slate-100 text-slate-700 rounded-2xl font-black text-[10px] uppercase">
                      <span className="flex items-center gap-3"><i className="fas fa-users-cog text-lg text-indigo-500"></i> Gerenciar Equipe</span>
+                     <i className="fas fa-chevron-right"></i>
+                  </button>
+
+                  <button onClick={() => { setIsLogsModalOpen(true); setIsSettingsModalOpen(false); }} className="w-full flex items-center justify-between p-5 bg-white text-slate-800 rounded-2xl font-black text-[10px] uppercase">
+                     <span className="flex items-center gap-3"><i className="fas fa-history text-lg text-indigo-500"></i> Ver Logs de Atividade</span>
                      <i className="fas fa-chevron-right"></i>
                   </button>
 
@@ -681,6 +783,34 @@ const App: React.FC = () => {
                   <input name="ushort" required maxLength={3} defaultValue={editingUnit?.shortName || ''} className="w-full px-5 py-3 bg-slate-50 border-2 border-slate-100 rounded-xl font-bold text-sm" placeholder="Sigla" />
                   <button className="w-full py-4 bg-indigo-600 text-white rounded-xl font-black text-[10px] uppercase">Salvar</button>
                </form>
+            </div>
+         </div>
+      )}
+
+      {isLogsModalOpen && (
+         <div className="fixed inset-0 bg-slate-950/90 backdrop-blur-md z-[120] flex items-center justify-center p-6">
+            <div className="bg-white w-full max-w-2xl rounded-[2.5rem] shadow-2xl overflow-hidden animate-scale-in">
+               <div className="p-8 border-b border-slate-50 flex items-center justify-between bg-indigo-50/10">
+                  <h3 className="font-black text-slate-900 uppercase">Logs de Atividade</h3>
+                  <div className="flex gap-2">
+                    <button onClick={() => exportLogsJSON()} className="py-2 px-3 bg-slate-50 text-slate-700 rounded-xl font-black text-[10px]">Exportar JSON</button>
+                    <button onClick={() => exportLogsCSV()} className="py-2 px-3 bg-slate-50 text-slate-700 rounded-xl font-black text-[10px]">Exportar CSV</button>
+                    <button onClick={() => { if(confirm('Limpar todos os logs?')) { clearLogs(); logEvent('logs_cleared', null, auth.phone); } }} className="py-2 px-3 bg-red-50 text-red-600 rounded-xl font-black text-[10px]">Limpar</button>
+                    <button onClick={() => { setIsLogsModalOpen(false); setIsSettingsModalOpen(true); }} className="text-slate-300 hover:text-red-500"><i className="fas fa-times-circle text-2xl"></i></button>
+                  </div>
+               </div>
+               <div className="p-6 max-h-[60vh] overflow-y-auto space-y-3">
+                  {getLogs().length > 0 ? getLogs().map(l => (
+                    <div key={l.id} className="p-4 bg-slate-50 rounded-xl border border-slate-100">
+                      <div className="flex items-center justify-between mb-2">
+                        <div className="text-[10px] font-black text-slate-600 uppercase">{new Date(l.ts).toLocaleString('pt-BR')}</div>
+                        <div className="text-[10px] font-bold text-slate-400 uppercase">{l.user || 'anon'}</div>
+                      </div>
+                      <div className="font-black text-slate-800 text-sm uppercase">{l.event}</div>
+                      <pre className="text-[10px] text-slate-500 mt-2 whitespace-pre-wrap">{JSON.stringify(l.payload || {}, null, 2)}</pre>
+                    </div>
+                  )) : <p className="text-center py-10 font-black text-slate-300 uppercase tracking-widest">Nenhum log registrado ainda.</p>}
+               </div>
             </div>
          </div>
       )}

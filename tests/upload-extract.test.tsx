@@ -6,7 +6,7 @@ import App from '../App';
 const MASTER_PHONE = '62998208705';
 const MASTER_PASSWORD = '12279154';
 
-test.skip('fluxo de importação: upload -> /api/extract -> produto aparece', async () => {
+test('fluxo de importação: upload -> /api/extract -> produto aparece', async () => {
   // mock alert to capture OTP
   const alerts: string[] = [];
   const origAlert = window.alert;
@@ -35,7 +35,8 @@ test.skip('fluxo de importação: upload -> /api/extract -> produto aparece', as
 
   // Open settings (cog button)
   const adminBtn = screen.getAllByRole('button').find(b => b.innerHTML.includes('fa-cog')) as HTMLButtonElement;
-  userEvent.click(adminBtn);
+  await userEvent.click(adminBtn);
+  await waitFor(() => expect(screen.getByText(/Importar via Nota Fiscal/i)).toBeInTheDocument(), { timeout: 2000 });
 
   // Mock fetch to emulate serverless /api/extract response
   const origFetch = (global as any).fetch;
@@ -59,12 +60,13 @@ test.skip('fluxo de importação: upload -> /api/extract -> produto aparece', as
   const fileInput = document.querySelector('input[type=file]') as HTMLInputElement;
   expect(fileInput).toBeTruthy();
   const file = new File(['dummy'], 'nota.pdf', { type: 'application/pdf' });
-  // fire upload using userEvent to ensure proper FileList is set
+
+  // fire upload using userEvent to ensure proper FileList is set, wrapped in act
   await userEvent.upload(fileInput, file);
 
   // Wait for fetch to be called and product to appear in the table (input value)
   await waitFor(() => expect(fetchCalled).toBe(true), { timeout: 3000 });
-  await waitFor(() => expect(screen.getByDisplayValue(/PRODUTO TESTE/i)).toBeInTheDocument(), { timeout: 3000 });
+  await waitFor(() => expect(screen.queryByDisplayValue(/PRODUTO TESTE/i)).toBeTruthy(), { timeout: 3000 });
 
   // restore
   window.alert = origAlert;
